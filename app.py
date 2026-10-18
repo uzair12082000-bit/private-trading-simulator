@@ -21,8 +21,8 @@ if 'last_valid_price' not in st.session_state:
 # ASSETS DEFINITION
 # ==========================================
 ASSETS = {
-    "Bitcoin (BTC)": {"finnhub": "BINANCE:BTCUSDT", "yahoo": "BTC-USD"},
-    "Ethereum (ETH)": {"finnhub": "BINANCE:ETHUSDT", "yahoo": "ETH-USD"},
+    "Bitcoin (BTC)": {"finnhub": "BINANCE:BTCUSDT", "yahoo": "BTC-USD", "coingecko": "bitcoin"},
+    "Ethereum (ETH)": {"finnhub": "BINANCE:ETHUSDT", "yahoo": "ETH-USD", "coingecko": "ethereum"},
     "Gold (XAUUSD)": {"finnhub": "OANDA:XAU_USD", "yahoo": "GC=F"},
     "Crude Oil (WTI)": {"finnhub": "OANDA:USOIL", "yahoo": "CL=F"}, 
     "EUR/USD": {"finnhub": "OANDA:EUR_USD", "yahoo": "EURUSD=X"},
@@ -32,57 +32,59 @@ ASSETS = {
 
 selected_asset_name = st.selectbox("Select Instrument", list(ASSETS.keys()))
 symbols = ASSETS[selected_asset_name]
-is_crypto = "BTC" in selected_asset_name or "ETH" in selected_asset_name
+is_crypto = "coingecko" in symbols
 
 current_price = 0.0
 data_source = ""
 
 # ==========================================
-# SMART DATA FETCHING LOGIC
+# 3-LAYER DATA FETCHING LOGIC
 # ==========================================
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 
-# Priority 1: For Crypto, ALWAYS try Yahoo First (Most Reliable)
-if is_crypto:
-    try:
-        df = yf.download(symbols['yahoo'], period="1d", interval="1m", progress=False, timeout=5)
-        if not df.empty and 'Close' in df.columns:
-            current_price = float(df['Close'].dropna().iloc[-1])
-            data_source = "Yahoo Finance (Crypto Live)"
-    except Exception:
-        pass
-
-# Priority 2: For Non-Crypto, Try Finnhub First
-if current_price == 0 and not is_crypto and FINNHUB_API_KEY:
+# Layer 1: Finnhub (Fastest for Stocks/Crypto if working)
+if FINNHUB_API_KEY and not is_crypto:
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={symbols['finnhub']}&token={FINNHUB_API_KEY}"
-        resp = requests.get(url, timeout=4)
+        resp = requests.get(url, timeout=3)
         data = resp.json()
         if 'c' in data and isinstance(data['c'], (int, float)) and data['c'] > 0:
             current_price = float(data['c'])
-            data_source = "Finnhub (Real-time)"
+            data_source = "Finnhub"
     except Exception:
         pass
 
-# Priority 3: Universal Fallback to Yahoo (For Forex/Commodities/Weekends)
+# Layer 2: Yahoo Finance (Standard Fallback)
 if current_price == 0:
     try:
-        df = yf.download(symbols['yahoo'], period="5d", interval="1m", progress=False, timeout=5)
+        df = yf.download(symbols['yahoo'], period="1d", interval="1m", progress=False, timeout=4)
         if not df.empty and 'Close' in df.columns:
-            valid_prices = df['Close'].dropna()
-            if not valid_prices.empty:
-                current_price = float(valid_prices.iloc[-1])
-                data_source = "Yahoo Finance (Last Known)"
+            current_price = float(df['Close'].dropna().iloc[-1])
+            data_source = "Yahoo Finance"
     except Exception:
+        # Try daily if minute fails
         try:
-            df_daily = yf.download(symbols['yahoo'], period="30d", interval="1d", progress=False, timeout=5)
-            if not df_daily.empty:
-                current_price = float(df_daily['Close'].iloc[-1])
-                data_source = "Yahoo Finance (Daily Close)"
+            df_d = yf.download(symbols['yahoo'], period="5d", interval="1d", progress=False, timeout=4)
+            if not df_d.empty:
+                current_price = float(df_d['Close'].iloc[-1])
+                data_source = "Yahoo (Daily)"
         except Exception:
             pass
 
-# Cache Price to Prevent UI Flicker
+# Layer 3: CoinGecko (ULTIMATE BACKUP FOR CRYPTO ONLY)
+if current_price == 0 and is_crypto:
+    try:
+        cg_id = symbols['coingecko']
+        url = f"https://api.coingecko.com/api/v3/simple/price?ids={cg_id}&vs_currencies=usd"
+        resp = requests.get(url, timeout=5)
+        data = resp.json()
+        if cg_id in data and 'usd' in data[cg_id]:
+            current_price = float(data[cg_id]['usd'])
+            data_source = "CoinGecko (Backup)"
+    except Exception:
+        pass
+
+# Cache Price Logic
 if current_price > 0:
     st.session_state.last_valid_price[selected_asset_name] = current_price
 elif selected_asset_name in st.session_state.last_valid_price:
@@ -98,9 +100,9 @@ col2.metric("Fake Balance", f"${st.session_state.balance:,.2f}")
 col3.metric("Open Positions", len(st.session_state.positions))
 
 if current_price == 0:
-    st.error("❌ Market closed or data unavailable.")
+    st.error("❌ All data sources failed. Server might be temporarily blocked.")
 else:
-    st.caption(f"📡 Data Source: {data_source}")
+    st.caption(f"📡 Source: {data_source}")
 
 # ==========================================
 # ORDER PANEL
