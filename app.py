@@ -21,8 +21,8 @@ if 'last_valid_price' not in st.session_state:
 # ASSETS DEFINITION
 # ==========================================
 ASSETS = {
-    "Bitcoin (BTC)": {"finnhub": "BINANCE:BTCUSDT", "yahoo": "BTC-USD", "coingecko": "bitcoin"},
-    "Ethereum (ETH)": {"finnhub": "BINANCE:ETHUSDT", "yahoo": "ETH-USD", "coingecko": "ethereum"},
+    "Bitcoin (BTC)": {"coingecko": "bitcoin", "yahoo": "BTC-USD"},
+    "Ethereum (ETH)": {"coingecko": "ethereum", "yahoo": "ETH-USD"},
     "Gold (XAUUSD)": {"finnhub": "OANDA:XAU_USD", "yahoo": "GC=F"},
     "Crude Oil (WTI)": {"finnhub": "OANDA:USOIL", "yahoo": "CL=F"}, 
     "EUR/USD": {"finnhub": "OANDA:EUR_USD", "yahoo": "EURUSD=X"},
@@ -38,40 +38,11 @@ current_price = 0.0
 data_source = ""
 
 # ==========================================
-# 3-LAYER DATA FETCHING LOGIC
+# DATA FETCHING LOGIC (COINGECKO FIRST FOR CRYPTO)
 # ==========================================
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 
-# Layer 1: Finnhub (Fastest for Stocks/Crypto if working)
-if FINNHUB_API_KEY and not is_crypto:
-    try:
-        url = f"https://finnhub.io/api/v1/quote?symbol={symbols['finnhub']}&token={FINNHUB_API_KEY}"
-        resp = requests.get(url, timeout=3)
-        data = resp.json()
-        if 'c' in data and isinstance(data['c'], (int, float)) and data['c'] > 0:
-            current_price = float(data['c'])
-            data_source = "Finnhub"
-    except Exception:
-        pass
-
-# Layer 2: Yahoo Finance (Standard Fallback)
-if current_price == 0:
-    try:
-        df = yf.download(symbols['yahoo'], period="1d", interval="1m", progress=False, timeout=4)
-        if not df.empty and 'Close' in df.columns:
-            current_price = float(df['Close'].dropna().iloc[-1])
-            data_source = "Yahoo Finance"
-    except Exception:
-        # Try daily if minute fails
-        try:
-            df_d = yf.download(symbols['yahoo'], period="5d", interval="1d", progress=False, timeout=4)
-            if not df_d.empty:
-                current_price = float(df_d['Close'].iloc[-1])
-                data_source = "Yahoo (Daily)"
-        except Exception:
-            pass
-
-# Layer 3: CoinGecko (ULTIMATE BACKUP FOR CRYPTO ONLY)
+# Layer 1: CoinGecko for Crypto (Never Blocked)
 if current_price == 0 and is_crypto:
     try:
         cg_id = symbols['coingecko']
@@ -80,9 +51,37 @@ if current_price == 0 and is_crypto:
         data = resp.json()
         if cg_id in data and 'usd' in data[cg_id]:
             current_price = float(data[cg_id]['usd'])
-            data_source = "CoinGecko (Backup)"
+            data_source = "CoinGecko (Live)"
+    except Exception as e:
+        pass
+
+# Layer 2: Finnhub for Non-Crypto (If Key Exists)
+if current_price == 0 and not is_crypto and FINNHUB_API_KEY:
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbols['finnhub']}&token={FINNHUB_API_KEY}"
+        resp = requests.get(url, timeout=4)
+        data = resp.json()
+        if 'c' in data and isinstance(data['c'], (int, float)) and data['c'] > 0:
+            current_price = float(data['c'])
+            data_source = "Finnhub"
     except Exception:
         pass
+
+# Layer 3: Yahoo Finance Fallback (For All Assets)
+if current_price == 0:
+    try:
+        df = yf.download(symbols['yahoo'], period="1d", interval="1m", progress=False, timeout=4)
+        if not df.empty and 'Close' in df.columns:
+            current_price = float(df['Close'].dropna().iloc[-1])
+            data_source = "Yahoo Finance"
+    except Exception:
+        try:
+            df_d = yf.download(symbols['yahoo'], period="5d", interval="1d", progress=False, timeout=4)
+            if not df_d.empty:
+                current_price = float(df_d['Close'].iloc[-1])
+                data_source = "Yahoo (Daily)"
+        except Exception:
+            pass
 
 # Cache Price Logic
 if current_price > 0:
@@ -102,7 +101,7 @@ col3.metric("Open Positions", len(st.session_state.positions))
 if current_price == 0:
     st.error("❌ All data sources failed. Server might be temporarily blocked.")
 else:
-    st.caption(f"📡 Source: {data_source}")
+    st.caption(f" Source: {data_source}")
 
 # ==========================================
 # ORDER PANEL
