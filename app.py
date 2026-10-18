@@ -18,11 +18,13 @@ if 'last_valid_price' not in st.session_state:
     st.session_state.last_valid_price = {}
 
 # ==========================================
-# HYBRID DATA FETCHING ENGINE
+# HYBRID DATA ENGINE (Finnhub + Yahoo)
 # ==========================================
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 
 ASSETS = {
+    "Bitcoin (BTC)": {"finnhub": "BINANCE:BTCUSDT", "yahoo": "BTC-USD"},
+    "Ethereum (ETH)": {"finnhub": "BINANCE:ETHUSDT", "yahoo": "ETH-USD"},
     "Gold (XAUUSD)": {"finnhub": "OANDA:XAU_USD", "yahoo": "GC=F"},
     "Crude Oil (WTI)": {"finnhub": "OANDA:USOIL", "yahoo": "CL=F"}, 
     "EUR/USD": {"finnhub": "OANDA:EUR_USD", "yahoo": "EURUSD=X"},
@@ -36,7 +38,7 @@ symbols = ASSETS[selected_asset_name]
 current_price = 0.0
 data_source = ""
 
-# Strategy 1: Try Finnhub First (Fastest for Stocks/Crypto)
+# Strategy 1: Finnhub (Real-time for Crypto/Stocks)
 if FINNHUB_API_KEY:
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={symbols['finnhub']}&token={FINNHUB_API_KEY}"
@@ -48,17 +50,25 @@ if FINNHUB_API_KEY:
     except Exception:
         pass
 
-# Strategy 2: Fallback to Yahoo Finance (Reliable for Forex/Commodities)
+# Strategy 2: Yahoo Finance (Fallback for Forex/Commodities & Weekends)
 if current_price == 0:
     try:
-        df = yf.download(symbols['yahoo'], period="1d", interval="1m", progress=False, timeout=5)
+        df = yf.download(symbols['yahoo'], period="5d", interval="1m", progress=False, timeout=5)
         if not df.empty and 'Close' in df.columns:
-            current_price = float(df['Close'].dropna().iloc[-1])
-            data_source = "Yahoo Finance (Fallback)"
+            valid_prices = df['Close'].dropna()
+            if not valid_prices.empty:
+                current_price = float(valid_prices.iloc[-1])
+                data_source = "Yahoo Finance (Last Known)"
     except Exception:
-        pass
+        try:
+            df_daily = yf.download(symbols['yahoo'], period="30d", interval="1d", progress=False, timeout=5)
+            if not df_daily.empty:
+                current_price = float(df_daily['Close'].iloc[-1])
+                data_source = "Yahoo Finance (Daily Close)"
+        except Exception:
+            pass
 
-# Cache last known price to prevent UI flickering
+# Cache Price to Prevent UI Flicker
 if current_price > 0:
     st.session_state.last_valid_price[selected_asset_name] = current_price
 elif selected_asset_name in st.session_state.last_valid_price:
@@ -74,9 +84,9 @@ col2.metric("Fake Balance", f"${st.session_state.balance:,.2f}")
 col3.metric("Open Positions", len(st.session_state.positions))
 
 if current_price == 0:
-    st.error("❌ Unable to fetch live price from any source. Market might be closed.")
+    st.error("❌ Market closed or data unavailable. Try Bitcoin for 24/7 testing.")
 else:
-    st.caption(f"📡 Data Source: {data_source}")
+    st.caption(f" Data Source: {data_source}")
 
 # ==========================================
 # ORDER PANEL
@@ -156,12 +166,4 @@ if st.session_state.positions:
         st.session_state.positions = [p for i, p in enumerate(st.session_state.positions) if i not in closed_indices]
         st.rerun()
     
-    st.dataframe(pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'pnl']], use_container_width=True, hide_index=True)
-
-# ==========================================
-# RENDER-FRIENDLY AUTO REFRESH
-# ==========================================
-# Using meta refresh instead of time.sleep to prevent server timeouts
-st.markdown("""
-<meta http-equiv="refresh" content="15">
-""", unsafe_allow_html=True)
+    st.dataframe(pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'p
