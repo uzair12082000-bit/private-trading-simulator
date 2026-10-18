@@ -86,7 +86,7 @@ col3.metric("Open Positions", len(st.session_state.positions))
 if current_price == 0:
     st.error("❌ Market closed or data unavailable. Try Bitcoin for 24/7 testing.")
 else:
-    st.caption(f" Data Source: {data_source}")
+    st.caption(f"📡 Data Source: {data_source}")
 
 # ==========================================
 # ORDER PANEL
@@ -166,4 +166,10 @@ if st.session_state.positions:
         st.session_state.positions = [p for i, p in enumerate(st.session_state.positions) if i not in closed_indices]
         st.rerun()
     
-    st.dataframe(pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'p
+    # Fixed Line 169: Complete string literal for 'pnl'
+    st.dataframe(pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'pnl']], use_container_width=True, hide_index=True)
+
+# ==========================================
+# RENDER-FRIENDLY AUTO REFRESH (Every 15s)
+# ==========================================
+st.markdown('<meta http-equiv="refresh" content="15">', unsafe_allow_html=True)
