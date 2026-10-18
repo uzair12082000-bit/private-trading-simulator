@@ -1,61 +1,82 @@
 import streamlit as st
-import yfinance as yf
-import pandas as pd
+import requests
+import os
 from datetime import datetime
 
 # ==========================================
-# PAGE CONFIG & SESSION STATE INITIALIZATION
+# PAGE CONFIG & SESSION STATE
 # ==========================================
 st.set_page_config(page_title="Private Trading Simulator", layout="wide", page_icon="📈")
 
-# Initialize Fake Wallet & Positions only once
 if 'balance' not in st.session_state:
     st.session_state.balance = 100000.0
 if 'positions' not in st.session_state:
     st.session_state.positions = []
-if 'trade_history' not in st.session_state:
-    st.session_state.trade_history = []
 
 # ==========================================
-# LIVE DATA FETCHING (YAHOO FINANCE)
+# FINNHUB API SETUP
 # ==========================================
-ASSETS = {
-    "Gold (XAUUSD)": "GC=F",
-    "Crude Oil (WTI)": "CL=F", 
-    "EUR/USD": "EURUSD=X",
-    "GBP/USD": "GBPUSD=X",
-    "US500 (S&P)": "^GSPC"
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
+
+ASSETS_FINNHUB = {
+    "Gold (XAUUSD)": "OANDA:XAU_USD",
+    "Crude Oil (WTI)": "OANDA:USOIL", 
+    "EUR/USD": "OANDA:EUR_USD",
+    "GBP/USD": "OANDA:GBP_USD",
+    "US500 (S&P)": "US500"
 }
 
-selected_asset_name = st.selectbox("Select Instrument", list(ASSETS.keys()))
-ticker_code = ASSETS[selected_asset_name]
+selected_asset_name = st.selectbox("Select Instrument", list(ASSETS_FINNHUB.keys()))
+finnhub_symbol = ASSETS_FINNHUB[selected_asset_name]
 
-# Fetch latest data safely
-try:
-    df = yf.download(ticker_code, period="1d", interval="1m", progress=False)
-    current_price = float(df['Close'].iloc[-1]) if not df.empty else 0.0
-except Exception:
-    current_price = 0.0
-    st.warning("⚠️ Market closed or data temporarily unavailable.")
+# Fetch Live Price
+current_price = 0.0
+api_error = None
+
+if FINNHUB_API_KEY:
+    try:
+        url = f"https://finnhub.io/api/v1/quote?symbol={finnhub_symbol}&token={FINNHUB_API_KEY}"
+        response = requests.get(url, timeout=5)
+        data = response.json()
+        
+        if 'c' in data and isinstance(data['c'], (int, float)) and data['c'] > 0:
+            current_price = float(data['c'])
+        else:
+            api_error = "Market closed or invalid symbol"
+            
+    except Exception as e:
+        api_error = str(e)[:100]
+else:
+    api_error = "API Key missing in Render Environment Variables"
+
+# Fallback to last known price
+if current_price == 0 and 'last_price' in st.session_state:
+    current_price = st.session_state['last_price']
+    st.info(f"📡 Using cached price: {current_price}")
+elif current_price > 0:
+    st.session_state['last_price'] = current_price
 
 # ==========================================
-# DASHBOARD HEADER METRICS
+# DASHBOARD METRICS
 # ==========================================
 col1, col2, col3 = st.columns(3)
-col1.metric(" Current Price", f"{current_price:.4f}" if current_price > 0 else "N/A")
-col2.metric("💳 Fake Balance", f"${st.session_state.balance:,.2f}")
-col3.metric("📊 Open Positions", len(st.session_state.positions))
+col1.metric("Current Price", f"{current_price:.4f}" if current_price > 0 else "N/A")
+col2.metric("Fake Balance", f"${st.session_state.balance:,.2f}")
+col3.metric("Open Positions", len(st.session_state.positions))
+
+if api_error and current_price == 0:
+    st.error(f"❌ Data Error: {api_error}")
 
 # ==========================================
-# ORDER EXECUTION PANEL
+# ORDER PANEL
 # ==========================================
 st.divider()
-st.subheader("🎯 Place Order")
+st.subheader("Place Order")
 
 order_type = st.radio("Direction", ["Market Buy", "Market Sell"], horizontal=True)
 lot_size = st.number_input("Lot Size (Units)", min_value=1, max_value=100, value=1)
 
-# Auto-calculate default SL/TP based on direction
+# Auto SL/TP Calculation
 default_sl = current_price * 0.98 if "Buy" in order_type else current_price * 1.02
 default_tp = current_price * 1.02 if "Buy" in order_type else current_price * 0.98
 
@@ -65,18 +86,16 @@ with sl_col:
 with tp_col:
     tp_price = st.number_input("Take Profit Price", value=default_tp, step=0.01)
 
-execute_btn = st.button("🚀 Execute Trade", type="primary", use_container_width=True)
+execute_btn = st.button("Execute Trade", type="primary", use_container_width=True)
 
 if execute_btn:
     if current_price == 0:
-        st.error("❌ Cannot trade: No live price available!")
+        st.error("Cannot trade: No live price available!")
     elif lot_size * current_price > st.session_state.balance:
-        st.error(f"❌ Insufficient Balance! Required: ${lot_size * current_price:,.2f}")
+        st.error(f"Insufficient Balance! Required: ${lot_size * current_price:,.2f}")
     else:
-        # Deduct margin from balance
         st.session_state.balance -= (current_price * lot_size)
-        
-        new_position = {
+        st.session_state.positions.append({
             "asset": selected_asset_name,
             "type": order_type,
             "entry": current_price,
@@ -84,36 +103,32 @@ if execute_btn:
             "sl": sl_price,
             "tp": tp_price,
             "time": datetime.now().strftime("%H:%M:%S")
-        }
-        st.session_state.positions.append(new_position)
-        st.success(f"✅ Executed: {order_type} {lot_size} {selected_asset_name} @ {current_price:.4f}")
+        })
+        st.success(f"Executed: {order_type} {lot_size} {selected_asset_name} @ {current_price:.4f}")
         st.rerun()
 
 # ==========================================
-# POSITIONS TABLE WITH AUTO SL/TP CHECK
+# POSITIONS TABLE WITH AUTO SL/TP
 # ==========================================
 if st.session_state.positions:
     st.divider()
-    st.subheader("📋 Open Positions")
+    st.subheader("Open Positions")
     
+    import pandas as pd
     pos_df = pd.DataFrame(st.session_state.positions)
     pos_df['current_price'] = current_price
     
-    # Calculate Unrealized P&L
     def calc_pnl(row):
         if "Buy" in row['type']:
             return (row['current_price'] - row['entry']) * row['lots']
-        else:
-            return (row['entry'] - row['current_price']) * row['lots']
-            
+        return (row['entry'] - row['current_price']) * row['lots']
+        
     pos_df['pnl'] = pos_df.apply(calc_pnl, axis=1)
     
-    # Check and Auto-Close SL/TP
+    # Auto Close Logic
     closed_indices = []
     for idx, row in pos_df.iterrows():
-        hit_sl = False
-        hit_tp = False
-        
+        hit_sl = hit_tp = False
         if "Buy" in row['type']:
             if row['current_price'] <= row['sl']: hit_sl = True
             if row['current_price'] >= row['tp']: hit_tp = True
@@ -126,37 +141,18 @@ if st.session_state.positions:
             refund = row['entry'] * row['lots']
             st.session_state.balance += (refund + pnl_realized)
             closed_indices.append(idx)
-            
             reason = "STOP LOSS" if hit_sl else "TAKE PROFIT"
-            st.toast(f"🔔 {reason} Hit: {row['asset']} | P&L: ${pnl_realized:,.2f}", icon="🔔")
+            st.toast(f"{reason} Hit: {row['asset']} | P&L: ${pnl_realized:,.2f}", icon="🔔")
 
-    # Remove closed positions
     if closed_indices:
         st.session_state.positions = [p for i, p in enumerate(st.session_state.positions) if i not in closed_indices]
         st.rerun()
     
-    # Display Table with Color Coding
-    st.dataframe(
-        pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'pnl']],
-        use_container_width=True,
-        column_config={
-            "pnl": st.column_config.NumberColumn("P&L ($)", format="$%.2f")
-        },
-        hide_index=True
-    )
-
-# ==========================================
-# CHART SECTION
-# ==========================================
-if not df.empty:
-    st.divider()
-    st.subheader("📉 Live Chart (1-Minute)")
-    st.line_chart(df['Close'], height=400)
+    st.dataframe(pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'pnl']], use_container_width=True, hide_index=True)
 
 # ==========================================
 # AUTO REFRESH EVERY 15 SECONDS
 # ==========================================
-# Using rerun instead of sleep to prevent Render crashes
 import time
 time.sleep(15)
 st.rerun()
