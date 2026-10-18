@@ -18,10 +18,8 @@ if 'last_valid_price' not in st.session_state:
     st.session_state.last_valid_price = {}
 
 # ==========================================
-# HYBRID DATA ENGINE (Finnhub + Yahoo)
+# ASSETS DEFINITION
 # ==========================================
-FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
-
 ASSETS = {
     "Bitcoin (BTC)": {"finnhub": "BINANCE:BTCUSDT", "yahoo": "BTC-USD"},
     "Ethereum (ETH)": {"finnhub": "BINANCE:ETHUSDT", "yahoo": "ETH-USD"},
@@ -34,12 +32,28 @@ ASSETS = {
 
 selected_asset_name = st.selectbox("Select Instrument", list(ASSETS.keys()))
 symbols = ASSETS[selected_asset_name]
+is_crypto = "BTC" in selected_asset_name or "ETH" in selected_asset_name
 
 current_price = 0.0
 data_source = ""
 
-# Strategy 1: Finnhub (Real-time for Crypto/Stocks)
-if FINNHUB_API_KEY:
+# ==========================================
+# SMART DATA FETCHING LOGIC
+# ==========================================
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
+
+# Priority 1: For Crypto, ALWAYS try Yahoo First (Most Reliable)
+if is_crypto:
+    try:
+        df = yf.download(symbols['yahoo'], period="1d", interval="1m", progress=False, timeout=5)
+        if not df.empty and 'Close' in df.columns:
+            current_price = float(df['Close'].dropna().iloc[-1])
+            data_source = "Yahoo Finance (Crypto Live)"
+    except Exception:
+        pass
+
+# Priority 2: For Non-Crypto, Try Finnhub First
+if current_price == 0 and not is_crypto and FINNHUB_API_KEY:
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={symbols['finnhub']}&token={FINNHUB_API_KEY}"
         resp = requests.get(url, timeout=4)
@@ -50,7 +64,7 @@ if FINNHUB_API_KEY:
     except Exception:
         pass
 
-# Strategy 2: Yahoo Finance (Fallback for Forex/Commodities & Weekends)
+# Priority 3: Universal Fallback to Yahoo (For Forex/Commodities/Weekends)
 if current_price == 0:
     try:
         df = yf.download(symbols['yahoo'], period="5d", interval="1m", progress=False, timeout=5)
@@ -84,7 +98,7 @@ col2.metric("Fake Balance", f"${st.session_state.balance:,.2f}")
 col3.metric("Open Positions", len(st.session_state.positions))
 
 if current_price == 0:
-    st.error("❌ Market closed or data unavailable. Try Bitcoin for 24/7 testing.")
+    st.error("❌ Market closed or data unavailable.")
 else:
     st.caption(f"📡 Data Source: {data_source}")
 
@@ -166,7 +180,6 @@ if st.session_state.positions:
         st.session_state.positions = [p for i, p in enumerate(st.session_state.positions) if i not in closed_indices]
         st.rerun()
     
-    # Fixed Line 169: Complete string literal for 'pnl'
     st.dataframe(pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'pnl']], use_container_width=True, hide_index=True)
 
 # ==========================================
