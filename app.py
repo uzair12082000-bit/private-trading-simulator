@@ -1,5 +1,7 @@
 import streamlit as st
 import requests
+import yfinance as yf
+import pandas as pd
 import os
 from datetime import datetime
 
@@ -12,49 +14,56 @@ if 'balance' not in st.session_state:
     st.session_state.balance = 100000.0
 if 'positions' not in st.session_state:
     st.session_state.positions = []
+if 'last_valid_price' not in st.session_state:
+    st.session_state.last_valid_price = {}
 
 # ==========================================
-# FINNHUB API SETUP
+# HYBRID DATA FETCHING ENGINE
 # ==========================================
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 
-ASSETS_FINNHUB = {
-    "Gold (XAUUSD)": "OANDA:XAU_USD",
-    "Crude Oil (WTI)": "OANDA:USOIL", 
-    "EUR/USD": "OANDA:EUR_USD",
-    "GBP/USD": "OANDA:GBP_USD",
-    "US500 (S&P)": "US500"
+ASSETS = {
+    "Gold (XAUUSD)": {"finnhub": "OANDA:XAU_USD", "yahoo": "GC=F"},
+    "Crude Oil (WTI)": {"finnhub": "OANDA:USOIL", "yahoo": "CL=F"}, 
+    "EUR/USD": {"finnhub": "OANDA:EUR_USD", "yahoo": "EURUSD=X"},
+    "GBP/USD": {"finnhub": "OANDA:GBP_USD", "yahoo": "GBPUSD=X"},
+    "US500 (S&P)": {"finnhub": "US500", "yahoo": "^GSPC"}
 }
 
-selected_asset_name = st.selectbox("Select Instrument", list(ASSETS_FINNHUB.keys()))
-finnhub_symbol = ASSETS_FINNHUB[selected_asset_name]
+selected_asset_name = st.selectbox("Select Instrument", list(ASSETS.keys()))
+symbols = ASSETS[selected_asset_name]
 
-# Fetch Live Price
 current_price = 0.0
-api_error = None
+data_source = ""
 
+# Strategy 1: Try Finnhub First (Fastest for Stocks/Crypto)
 if FINNHUB_API_KEY:
     try:
-        url = f"https://finnhub.io/api/v1/quote?symbol={finnhub_symbol}&token={FINNHUB_API_KEY}"
-        response = requests.get(url, timeout=5)
-        data = response.json()
-        
+        url = f"https://finnhub.io/api/v1/quote?symbol={symbols['finnhub']}&token={FINNHUB_API_KEY}"
+        resp = requests.get(url, timeout=4)
+        data = resp.json()
         if 'c' in data and isinstance(data['c'], (int, float)) and data['c'] > 0:
             current_price = float(data['c'])
-        else:
-            api_error = "Market closed or invalid symbol"
-            
-    except Exception as e:
-        api_error = str(e)[:100]
-else:
-    api_error = "API Key missing in Render Environment Variables"
+            data_source = "Finnhub (Real-time)"
+    except Exception:
+        pass
 
-# Fallback to last known price
-if current_price == 0 and 'last_price' in st.session_state:
-    current_price = st.session_state['last_price']
-    st.info(f"📡 Using cached price: {current_price}")
-elif current_price > 0:
-    st.session_state['last_price'] = current_price
+# Strategy 2: Fallback to Yahoo Finance (Reliable for Forex/Commodities)
+if current_price == 0:
+    try:
+        df = yf.download(symbols['yahoo'], period="1d", interval="1m", progress=False, timeout=5)
+        if not df.empty and 'Close' in df.columns:
+            current_price = float(df['Close'].dropna().iloc[-1])
+            data_source = "Yahoo Finance (Fallback)"
+    except Exception:
+        pass
+
+# Cache last known price to prevent UI flickering
+if current_price > 0:
+    st.session_state.last_valid_price[selected_asset_name] = current_price
+elif selected_asset_name in st.session_state.last_valid_price:
+    current_price = st.session_state.last_valid_price[selected_asset_name]
+    data_source = "Cached Data"
 
 # ==========================================
 # DASHBOARD METRICS
@@ -64,8 +73,10 @@ col1.metric("Current Price", f"{current_price:.4f}" if current_price > 0 else "N
 col2.metric("Fake Balance", f"${st.session_state.balance:,.2f}")
 col3.metric("Open Positions", len(st.session_state.positions))
 
-if api_error and current_price == 0:
-    st.error(f"❌ Data Error: {api_error}")
+if current_price == 0:
+    st.error("❌ Unable to fetch live price from any source. Market might be closed.")
+else:
+    st.caption(f"📡 Data Source: {data_source}")
 
 # ==========================================
 # ORDER PANEL
@@ -76,7 +87,6 @@ st.subheader("Place Order")
 order_type = st.radio("Direction", ["Market Buy", "Market Sell"], horizontal=True)
 lot_size = st.number_input("Lot Size (Units)", min_value=1, max_value=100, value=1)
 
-# Auto SL/TP Calculation
 default_sl = current_price * 0.98 if "Buy" in order_type else current_price * 1.02
 default_tp = current_price * 1.02 if "Buy" in order_type else current_price * 0.98
 
@@ -114,7 +124,6 @@ if st.session_state.positions:
     st.divider()
     st.subheader("Open Positions")
     
-    import pandas as pd
     pos_df = pd.DataFrame(st.session_state.positions)
     pos_df['current_price'] = current_price
     
@@ -125,7 +134,6 @@ if st.session_state.positions:
         
     pos_df['pnl'] = pos_df.apply(calc_pnl, axis=1)
     
-    # Auto Close Logic
     closed_indices = []
     for idx, row in pos_df.iterrows():
         hit_sl = hit_tp = False
@@ -151,8 +159,9 @@ if st.session_state.positions:
     st.dataframe(pos_df[['asset', 'type', 'entry', 'lots', 'sl', 'tp', 'pnl']], use_container_width=True, hide_index=True)
 
 # ==========================================
-# AUTO REFRESH EVERY 15 SECONDS
+# RENDER-FRIENDLY AUTO REFRESH
 # ==========================================
-import time
-time.sleep(15)
-st.rerun()
+# Using meta refresh instead of time.sleep to prevent server timeouts
+st.markdown("""
+<meta http-equiv="refresh" content="15">
+""", unsafe_allow_html=True)
